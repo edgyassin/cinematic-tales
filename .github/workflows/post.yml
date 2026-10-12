@@ -1,0 +1,99 @@
+name: Post TikTok stories
+
+on:
+  schedule:
+    # 3 posts a day on EACH of the 4 accounts (times in UTC; Dubai = UTC+4).
+    # 16:07, 22:07 and 03:07 Dubai time = 8am, 2pm, 7pm New York (US audience)
+    - cron: "7 12 * * *"
+    - cron: "7 18 * * *"
+    - cron: "7 23 * * *"
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Which account"
+        type: choice
+        options: [all, animal, mystery, series, whatif]
+        default: all
+      dry_run:
+        description: "Test only: make the video but don't post it (download it from the run page)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          ALL='[{"account":"animal","secret":"TIKTOK_REFRESH_TOKEN_ANIMAL"},{"account":"mystery","secret":"TIKTOK_REFRESH_TOKEN_MYSTERY"},{"account":"series","secret":"TIKTOK_REFRESH_TOKEN_SERIES"},{"account":"whatif","secret":"TIKTOK_REFRESH_TOKEN_WHATIF"}]'
+          PICK="${{ inputs.account }}"
+          if [ -z "$PICK" ] || [ "$PICK" = "all" ]; then
+            echo "matrix=$ALL" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(echo "$ALL" | jq -c --arg a "$PICK" '[.[] | select(.account==$a)]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  post:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: tiktok-${{ matrix.account }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-dejavu-core > /dev/null
+          pip install -q -r requirements.txt
+
+      - name: Make (and post) a video
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_REFRESH_TOKEN: ${{ secrets[matrix.secret] }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            python main.py --account ${{ matrix.account }} --dry-run
+          else
+            python main.py --account ${{ matrix.account }}
+          fi
+
+      - name: Upload test video
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-video-${{ matrix.account }}
+          path: output/*.mp4
+          retention-days: 7
+
+      - name: Save history
+        if: always()
+        run: |
+          git config user.name "tiktok-agent"
+          git config user.email "actions@users.noreply.github.com"
+          git add history/ || exit 0
+          git diff --cached --quiet && exit 0
+          git commit -q -m "history ${{ matrix.account }}: $(date -u +%F_%H%M)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q && git push -q && exit 0
+            sleep $((RANDOM % 10 + 3))
+          done
+          exit 1
