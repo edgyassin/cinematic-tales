@@ -1,0 +1,34 @@
+name: Connect a TikTok account
+
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        description: "Which account did you just log in with?"
+        type: choice
+        options: [animal, mystery, series, whatif]
+      code:
+        description: "Code shown on your callback page after logging in to TikTok"
+        required: true
+      redirect_uri:
+        description: "Your callback page URL (e.g. https://edgyassin.github.io/cinematic-tales/callback.html)"
+        required: true
+
+jobs:
+  connect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests pynacl
+      - name: Exchange code and save token
+        env:
+          ACCOUNT: ${{ inputs.account }}
+          TIKTOK_CODE: ${{ inputs.code }}
+          REDIRECT_URI: ${{ inputs.redirect_uri }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: python connect_tiktok.py
